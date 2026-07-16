@@ -20,7 +20,7 @@
 //!
 //! Use the public modules to access individual conversion steps:
 //!
-//! - [`convert`] — file format converters (`.inf→.ron`, `.b3d→.glb`, `.bmp→.png`, `.bmpf→.fnt`)
+//! - [`convert`] — file format converters (`.inf→.ron`, `.b3d→.glb`, `.bmp→.png`, `.bmpf→.fnt`, `.s2→.osmap`)
 //! - [`registry`] — `.ron` filename → registry key derivation
 //! - [`scanner`] — s2s cross-reference scanning and classification
 //! - [`script`] — s2s script transpilation, dialogue parsing, sectioned files

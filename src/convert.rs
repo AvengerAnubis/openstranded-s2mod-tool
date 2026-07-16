@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 //! File format converters: `.inf → .ron`, `.b3d → .glb`, `.bmp → .png`,
-//! `.bmpf → .fnt + .png`.
+//! `.bmpf → .fnt + .png`, `.s2 → .osmap`.
 
 use std::collections::HashMap;
 use std::fs;
@@ -204,4 +204,38 @@ pub fn convert_bmpf_to_fnt(
         .with_context(|| format!("writing {:?}", fnt_path))?;
 
     Ok(())
+}
+
+/// Convert a `.s2` map file to `.osmap` (OpenStranded MAP) format.
+///
+/// Reads the binary `.s2` file, parses it with `openstranded_map_tool`,
+/// converts to the `.osmap` intermediate format, and writes as RON.
+pub fn convert_s2_to_osmap(
+    s2_path: &Path,
+    osmap_path: &Path,
+    input_root: &Path,
+) -> Result<String> {
+    let source_name = s2_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("map");
+
+    let data = fs::read(s2_path)
+        .with_context(|| format!("reading {:?}", s2_path))?;
+
+    let s2 = openstranded_map_tool::parse_s2(&data)
+        .map_err(|e| anyhow::anyhow!("failed to parse {:?}: {}", s2_path, e))?;
+
+    let source_filename = source_name.to_string() + ".s2";
+    let osmap = openstranded_map_tool::s2_to_osmap(s2, &source_filename);
+
+    if let Some(parent) = osmap_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    openstranded_map_tool::save_osmap_ron(&osmap, osmap_path)?;
+
+    let orig_rel = super::util::relative_path(s2_path, input_root)
+        .to_string_lossy()
+        .to_string();
+    Ok(orig_rel)
 }

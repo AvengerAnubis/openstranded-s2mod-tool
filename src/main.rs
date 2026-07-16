@@ -16,7 +16,7 @@
 
 //! openstranded-s2mod-tool — CLI tool for converting original Stranded II mods.
 //!
-//! Transforms .inf / .b3d / .bmp / .bmpf / .s2s files into a .s2mod Content Pack.
+//! Transforms .inf / .b3d / .bmp / .bmpf / .s2s / .s2 files into a .s2mod Content Pack.
 //! Structure is 1:1 with the original — every file keeps its relative path,
 //! only extensions change:
 //!
@@ -25,6 +25,8 @@
 //!   .b3d  → .glb
 //!   .bmp  → .png  (magenta → transparent colour key)
 //!   .bmpf → .fnt  (+ .png texture atlas)
+//!   .s2   → .osmap  (binary map → RON map format)
+//!   .map  → .osmap  (text format map → RON map format, same parser)
 //!
 //! Pipeline:
 //!   1. Walk input directory, classify files
@@ -34,10 +36,11 @@
 //!   4. Convert .b3d → .glb (same tree)
 //!   5. Convert .bmp → .png (same tree, magenta → transparent)
 //!   6. Convert .bmpf → .fnt + .png (same tree)
-//!   7. Copy remaining files as-is
-//!   8. Update asset paths in .ron files (.b3d→.glb, .bmp→.png)
-//!   9. Generate manifest.toml with [registry] section
-//!  10. Pack to .s2mod (zip) or directory
+//!   7. Convert .s2/.map → .osmap (same tree)
+//!   8. Copy remaining files as-is
+//!   9. Update asset paths in .ron files (.b3d→.glb, .bmp→.png, .s2→.osmap)
+//!  10. Generate manifest.toml with [registry] section
+//!  11. Pack to .s2mod (zip) or directory
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -47,7 +50,7 @@ use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use s2mod_packer::{ContentPackManifest, S2ModPackage};
 
-use openstranded_s2mod_tool::convert::{convert_b3d_to_glb, convert_bmp_to_png, convert_bmpf_to_fnt, convert_inf_to_ron};
+use openstranded_s2mod_tool::convert::{convert_b3d_to_glb, convert_bmp_to_png, convert_bmpf_to_fnt, convert_inf_to_ron, convert_s2_to_osmap};
 use openstranded_s2mod_tool::registry::register_ron;
 use openstranded_s2mod_tool::scanner::{build_reference_map, classify_s2s, resolve_missing_script_refs, S2sClass, S2sRefType};
 use openstranded_s2mod_tool::script::{convert_sectioned_file, parse_dialogue_to_lua, InfRawSource};
@@ -78,6 +81,10 @@ struct Cli {
     /// Skip .bmp → .png texture conversion
     #[arg(long)]
     skip_textures: bool,
+
+    /// Skip .s2/.map → .osmap map conversion
+    #[arg(long)]
+    skip_maps: bool,
 
     /// Enable debug output
     #[arg(long, default_value_t = false)]
@@ -122,6 +129,7 @@ fn main() -> Result<()> {
     let mut b3d_files: Vec<PathBuf> = Vec::new();
     let mut bmp_files: Vec<PathBuf> = Vec::new();
     let mut bmpf_files: Vec<PathBuf> = Vec::new();
+    let mut s2_map_files: Vec<PathBuf> = Vec::new();
     let mut other_files: Vec<PathBuf> = Vec::new();
 
     // All parsed .inf entries (keyed by .inf path), used for reference scanning
@@ -150,6 +158,7 @@ fn main() -> Result<()> {
             Some("b3d") => b3d_files.push(path.to_path_buf()),
             Some("bmp") => bmp_files.push(path.to_path_buf()),
             Some("bmpf") => bmpf_files.push(path.to_path_buf()),
+            Some("s2" | "map") => s2_map_files.push(path.to_path_buf()),
             _ => other_files.push(path.to_path_buf()),
         }
     }
@@ -525,8 +534,47 @@ fn main() -> Result<()> {
         println!("    {} fonts processed", bmpf_files.len());
     }
 
-    // ── Step 7: Copy remaining files ───────────────────────
-    println!("[7/10] Copying remaining files...");
+    // ── Step 7: Convert .s2/.map → .osmap ─────────────────
+    if cli.skip_maps {
+        if !s2_map_files.is_empty() {
+            println!("[7/11] {} .s2/.map files skipped (--skip-maps)", s2_map_files.len());
+        }
+        for s2_path in &s2_map_files {
+            copy_to_staging(s2_path, input_path, &stage_path)?;
+        }
+    } else {
+        println!("[7/11] Converting .s2/.map maps → .osmap...");
+        let mut ok = 0u32;
+        let mut err = 0u32;
+
+        for s2_path in &s2_map_files {
+            let osmap_rel = relative_path(s2_path, input_path).with_extension("osmap");
+            let osmap_path = stage_path.join(&osmap_rel);
+
+            match convert_s2_to_osmap(s2_path, &osmap_path, input_path) {
+                Ok(orig_rel) => {
+                    ok += 1;
+                    let new_rel = osmap_rel.to_string_lossy().to_string();
+                    path_mappings.insert(orig_rel, new_rel);
+
+                    if debug {
+                        eprintln!("    {:?} → {:?}", s2_path, osmap_path);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("  Warning: failed to convert {:?}: {:#}", s2_path, e);
+                    copy_to_staging(s2_path, input_path, &stage_path)?;
+                    err += 1;
+                }
+            }
+        }
+        if ok > 0 || err > 0 {
+            println!("    {ok} converted, {err} failed");
+        }
+    }
+
+    // ── Step 8: Copy remaining files ───────────────────────
+    println!("[8/11] Copying remaining files...");
 
     let extra_set: HashSet<&PathBuf> = extra_script_files.iter().collect();
     let mut copied = 0u32;
@@ -541,9 +589,9 @@ fn main() -> Result<()> {
     }
     println!("    {copied} files copied");
 
-    // ── Step 8: Update asset paths in .ron files ───────────
+    // ── Step 9: Update asset paths in .ron files ───────────
     if !path_mappings.is_empty() {
-        println!("[8/10] Updating asset paths in .ron files...");
+        println!("[9/11] Updating asset paths in .ron files...");
         let mut updated_files = 0u32;
         let mut total_replacements = 0u32;
 
@@ -592,11 +640,11 @@ fn main() -> Result<()> {
         }
         println!("    {updated_files} .ron files updated ({total_replacements} replacements)");
     } else {
-        println!("[8/10] No asset path updates needed");
+        println!("[9/11] No asset path updates needed");
     }
 
-    // ── Step 9: Generate manifest ───────────────────────────
-    println!("[9/10] Generating manifest...");
+    // ── Step 10: Generate manifest ───────────────────────────
+    println!("[10/11] Generating manifest...");
 
     let pack_name = input_path
         .file_name()
@@ -622,8 +670,8 @@ fn main() -> Result<()> {
         eprintln!("  manifest.toml:\n{}", manifest_toml);
     }
 
-    // ── Step 10: Pack ───────────────────────────────────────
-    println!("[10/10] Packing...");
+    // ── Step 11: Pack ───────────────────────────────────────
+    println!("[11/11] Packing...");
 
     let output_path = Path::new(&cli.output);
     if cli.dir {
