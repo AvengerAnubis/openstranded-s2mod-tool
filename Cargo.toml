@@ -1,6 +1,6 @@
 [package]
 name = "openstranded-s2mod-tool"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 license = "GPL-3.0-or-later"
 description = "Convert original Stranded II mods to the .s2mod Content Pack format"
@@ -24,7 +24,7 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 tempfile = { version = "3", optional = true }
 b3d2glb = "0.4"
-openstranded-map-tool = "0.1"
+openstranded-map-tool = "0.2"
 image = "0.25"
 pathdiff = "0.2"
 
